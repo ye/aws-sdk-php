@@ -8,24 +8,44 @@ use GuzzleHttp\Stream\StreamInterface;
  */
 class Marshaler
 {
-    /**  @var callable Called if the marshaler encounters an invalid value. */
-    private $errorHandler;
+    /** @var array Default options to merge into provided options. */
+    private static $defaultOptions = [
+        'ignore_invalid'  => false,
+        'wrap_numbers'    => false,
+        'invalid_handler' => null,
+    ];
+
+    /** @var array Marshaler options. */
+    private $options;
 
     /**
-     * Instantiates the DynamoDB Marshaler.
+     * Instantiates a DynamoDB Marshaler.
      *
-     * The `$errorHandler` allows the user to provide custom logic to handle
-     * invalid values (e.g., an empty string). The signature of this function
-     * should look like `function ($type, $value)`. It should return an array
-     * formatted like `[TYPE => VALUE]`, representing a valid DynamoDB attribute
-     * value. If the function cannot handle the value, it should return `null`.
+     * The following options are valid.
      *
-     * @param callable $errorHandler A function that is called if the marshaler
-     *                               encounters a value it can't marshal.
+     * - skip_invalid: (bool) Set to `true` if invalid values should be skipped
+     *   (i.e., not included) during marshaling.
+     * - wrap_numbers: (bool) Set to `true` to wrap numbers with `NumberValue`
+     *   objects during unmarshaling to preserve the precision of numbers.
+     * - invalid_handler: (callable) Allows user to provide custom logic to
+     *   handle invalid values during marshaling. The signature of this function
+     *   should look like `function ($type, $value)`. It should return an array
+     *   formatted like `[TYPE => VALUE]`, representing a valid DynamoDB
+     *   attribute value. If the function cannot handle the value, it should
+     *   return `null`.
+     *
+     * @param array $options Marshaler options
      */
-    public function __construct(callable $errorHandler = null)
+    public function __construct(array $options = [])
     {
-        $this->errorHandler = $errorHandler;
+        $this->options = $options + self::$defaultOptions;
+        if ($this->options['invalid_handler']
+            && !is_callable($this->options['invalid_handler'])
+        ) {
+            throw new \InvalidArgumentException(
+                'The "invalid_handler" option must a callable or null.'
+            );
+        }
     }
 
     /**
@@ -42,11 +62,25 @@ class Marshaler
     }
 
     /**
+     * Creates a special object to represent a DynamoDB number (N) value.
+     *
+     * This helps maintain the precision of large integer/float in PHP.
+     *
+     * @param string|int|float $value A number value.
+     *
+     * @return NumberValue
+     */
+    public function number($value)
+    {
+        return new NumberValue($value);
+    }
+
+    /**
      * Creates a special object to represent a DynamoDB set (SS/NS/BS) value.
      *
      * @param array  $values The values of the set.
      *
-     * @return BinaryValue
+     * @return SetValue
      *
      */
     public function set(array $values)
@@ -114,7 +148,10 @@ class Marshaler
         $type = gettype($value);
         if ($type === 'string' && $value !== '') {
             $type = 'S';
-        } elseif ($type === 'integer' || $type === 'double') {
+        } elseif ($type === 'integer'
+            || $type === 'double'
+            || $value instanceof NumberValue
+        ) {
             $type = 'N';
             $value = (string) $value;
         } elseif ($type === 'boolean') {
@@ -131,11 +168,13 @@ class Marshaler
         ) {
             $type = $value instanceof \stdClass ? 'M' : 'L';
             $data = [];
-            $expectedIndex = 0;
+            $index = 0;
             foreach ($value as $k => $v) {
-                $data[$k] = $this->marshalValue($v);
-                if ($type === 'L' && (!is_int($k) || $k != $expectedIndex++)) {
-                    $type = 'M';
+                if ($v = $this->marshalValue($v)) {
+                    $data[$k] = $v;
+                    if ($type === 'L' && (!is_int($k) || $k != $index++)) {
+                        $type = 'M';
+                    }
                 }
             }
             $value = $data;
@@ -146,13 +185,22 @@ class Marshaler
             $type = 'B';
             $value = (string) $this->binary($value);
         } else {
-            if (($fn = $this->errorHandler) && ($result = $fn($type, $value))) {
+            // If there is an invalid_helper set, then call it.
+            if ($this->options['invalid_handler']
+                && ($result = $this->options['invalid_handler']($type, $value))
+            ) {
                 return $result;
             }
-            $type = $type === 'object' ? get_class($value) : $type;
-            throw new \UnexpectedValueException(
-                "Marshaling error: encountered unexpected type \"{$type}\"."
-            );
+
+            // If skip_invalid is set, then return null, otherwise throw error.
+            if ($this->options['ignore_invalid']) {
+                return null;
+            } else {
+                $type = $type === 'object' ? get_class($value) : $type;
+                throw new \UnexpectedValueException(
+                    "Marshaling error: encountered unexpected type \"{$type}\"."
+                );
+            }
         }
 
         return [$type => $value];
@@ -210,8 +258,12 @@ class Marshaler
             case 'NULL':
                 return null;
             case 'N':
-                // Use type coercion to unmarshal numbers to int/float.
-                return $value + 0;
+                if ($this->options['wrap_numbers']) {
+                    return new NumberValue($value);
+                } else {
+                    // Use type coercion to unmarshal numbers to int/float.
+                    return $value + 0;
+                }
             case 'M':
                 if ($mapAsObject) {
                     $data = new \stdClass;
@@ -220,7 +272,7 @@ class Marshaler
                     }
                     return $data;
                 }
-            // Else, unmarshal M the same way as L.
+                // NOBREAK: Unmarshal M the same way as L, for arrays.
             case 'L':
                 foreach ($value as &$v) {
                     $v = $this->unmarshalValue($v, $mapAsObject);
@@ -231,6 +283,9 @@ class Marshaler
             case 'SS':
             case 'NS':
             case 'BS':
+                foreach ($value as &$v) {
+                    $v = $this->unmarshalValue([$type[0] => $v]);
+                }
                 return new SetValue($type, $value);
         }
 

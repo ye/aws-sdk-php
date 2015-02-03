@@ -53,7 +53,7 @@ class SetValue implements \JsonSerializable, \ArrayAccess, \Countable, \Iterator
             throw new \RuntimeException('DynamoDB does not allow empty sets.');
         }
 
-        return array_map('strval', array_keys($this->values));
+        return array_map('strval', array_values($this->values));
     }
 
     /**
@@ -63,14 +63,7 @@ class SetValue implements \JsonSerializable, \ArrayAccess, \Countable, \Iterator
      */
     public function toArray()
     {
-        $values = array_keys($this->values);
-        if ($this->type === 'BS') {
-            foreach ($values as &$value) {
-                $value = new BinaryValue($value);
-            }
-        }
-
-        return $values;
+        return array_values($this->values);
     }
 
     public function offsetSet($offset, $value)
@@ -81,22 +74,24 @@ class SetValue implements \JsonSerializable, \ArrayAccess, \Countable, \Iterator
             );
         }
 
-        $this->values[(string) $value] = true;
+        $this->values[$this->type[0].$value] = $value;
     }
 
     public function offsetGet($offset)
     {
-        return isset($this->values[$offset]) ? $offset : null;
+        return isset($this->values[$this->type[0].$offset])
+            ? $this->values[$this->type[0].$offset]
+            : null;
     }
 
     public function offsetExists($offset)
     {
-        return isset($this->values[$offset]);
+        return isset($this->values[$this->type[0].$offset]);
     }
 
     public function offsetUnset($offset)
     {
-        unset($this->values[$offset]);
+        unset($this->values[$this->type[0].$offset]);
     }
 
     public function count()
@@ -106,7 +101,7 @@ class SetValue implements \JsonSerializable, \ArrayAccess, \Countable, \Iterator
 
     public function getIterator()
     {
-        return new \ArrayIterator($this->values);
+        return new \ArrayIterator(array_values($this->values));
     }
 
     public function jsonSerialize()

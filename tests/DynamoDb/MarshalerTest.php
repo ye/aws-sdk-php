@@ -16,9 +16,9 @@ class MarshalerTest extends \PHPUnit_Framework_TestCase
      */
     public function testMarshalValueUseCases($value, $expectedResult)
     {
-        $m = new Marshaler(function ($type, $value) {
+        $m = new Marshaler(['invalid_handler' => function ($type, $value) {
             return ($value === '') ? ['NULL' => true] : null;
-        });
+        }]);
         try {
             $actualResult = $m->marshalValue($value);
         } catch (\UnexpectedValueException $e) {
@@ -48,6 +48,7 @@ class MarshalerTest extends \PHPUnit_Framework_TestCase
             [5000000000, ['N' => '5000000000']],
             [1.23, ['N' => '1.23']],
             [1e10, ['N' => '10000000000']],
+            [$m->number('9999999999999999'), ['N' => '9999999999999999']],
 
             // "BOOL" & "NULL"
             [true, ['BOOL' => true]],
@@ -316,6 +317,28 @@ JSON;
 
         $marshaled = $m->marshalItem($item);
         $this->assertEquals($formatted, $marshaled);
+    }
 
+    public function testCanIgnoreInvalidValuesWithOption()
+    {
+        $m = new Marshaler(['ignore_invalid' => true]);
+        $result = $m->marshalItem([
+            'foo' => 'bar',
+            'bar' => '',
+            'baz' => new \SplFileInfo(__FILE__)
+        ]);
+        $this->assertSame(['foo' => ['S' => 'bar']], $result);
+    }
+
+    public function testCanWrapLargeNumbersWithOption()
+    {
+        $m = new Marshaler(['wrap_numbers' => true]);
+        $result = $m->unmarshalItem([
+            'foo' => ['NS' => ['99999999999999999999', '9']],
+            'bar' => ['N' => '99999999999999999999.99999999999999999999'],
+        ]);
+        $this->assertInstanceOf('Aws\DynamoDb\NumberValue', $result['bar']);
+        $this->assertEquals('99999999999999999999', (string) iterator_to_array($result['foo'])[0]);
+        $this->assertEquals('99999999999999999999.99999999999999999999', (string) $result['bar']);
     }
 }
