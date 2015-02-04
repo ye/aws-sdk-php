@@ -2,6 +2,9 @@
 namespace Aws\Tests\DynamoDb;
 
 use Aws\DynamoDb\Marshaler;
+use Aws\DynamoDb\BinaryValue;
+use Aws\DynamoDb\NumberValue;
+use Aws\DynamoDb\SetValue;
 use GuzzleHttp\Stream\Stream;
 
 /**
@@ -14,11 +17,9 @@ class MarshalerTest extends \PHPUnit_Framework_TestCase
     /**
      * @dataProvider getMarshalValueUseCases
      */
-    public function testMarshalValueUseCases($value, $expectedResult)
+    public function testMarshalValueUseCases($value, $expectedResult, $options = [])
     {
-        $m = new Marshaler(['invalid_handler' => function ($type, $value) {
-            return ($value === '') ? ['NULL' => true] : null;
-        }]);
+        $m = new Marshaler($options);
         try {
             $actualResult = $m->marshalValue($value);
         } catch (\UnexpectedValueException $e) {
@@ -39,7 +40,7 @@ class MarshalerTest extends \PHPUnit_Framework_TestCase
             // "S"
             ['S', ['S' => 'S']],
             ['3', ['S' => '3']],
-            ['', ['NULL' => true]],
+            ['', ['NULL' => true], ['nullify_invalid' => true]],
 
             // "N"
             [1, ['N' => '1']],
@@ -172,8 +173,10 @@ class MarshalerTest extends \PHPUnit_Framework_TestCase
                 $m->set([$m->binary('a'), $m->binary('b'), $m->binary('c')]),
                 ['BS' => ['a', 'b', 'c']]
             ],
+            [$m->set([]), self::ERROR],
 
-            // Errors
+                // Errors
+            [$m->set(['a', 2]), self::ERROR],
             [new \SplFileInfo(__FILE__), self::ERROR],
         ];
     }
@@ -233,11 +236,6 @@ JSON;
         (new Marshaler)->marshalJson('foo');
     }
 
-    public function testErrorIfCreateEmptySet()
-    {
-        $this->setExpectedException('InvalidArgumentException');
-        (new Marshaler)->set([]);
-    }
 
     public function testUnmarshalingHandlesAllDynamoDbTypes()
     {
@@ -340,5 +338,41 @@ JSON;
         $this->assertInstanceOf('Aws\DynamoDb\NumberValue', $result['bar']);
         $this->assertEquals('99999999999999999999', (string) iterator_to_array($result['foo'])[0]);
         $this->assertEquals('99999999999999999999.99999999999999999999', (string) $result['bar']);
+    }
+
+    /**
+     * @covers Aws\DynamoDb\NumberValue
+     */
+    public function testNumberValueCanBeFormattedAndSerialized()
+    {
+        $number = new NumberValue('99999999999999999999');
+        $this->assertEquals('99999999999999999999', (string) $number);
+        $this->assertEquals('"99999999999999999999"', json_encode($number));
+    }
+
+    /**
+     * @covers Aws\DynamoDb\BinaryValue
+     */
+    public function testBinaryValueCanBeFormattedAndSerialized()
+    {
+        $resource = fopen('php://temp', 'w+');
+        fwrite($resource, 'foo');
+        fseek($resource, 0);
+
+        $binary = new BinaryValue($resource);
+        $this->assertEquals('foo', (string) $binary);
+        $this->assertEquals('"foo"', json_encode($binary));
+    }
+
+    /**
+     * @covers Aws\DynamoDb\SetValue
+     */
+    public function testSetValueCanBeFormattedAndSerialized()
+    {
+        $set = new SetValue(['foo', 'bar', 'baz']);
+        $this->assertEquals(['foo', 'bar', 'baz'], $set->toArray());
+        $this->assertEquals('["foo","bar","baz"]', json_encode($set));
+        $this->assertEquals(3, count($set));
+        $this->assertEquals(3, iterator_count($set));
     }
 }
