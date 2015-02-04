@@ -133,28 +133,36 @@ class Marshaler
     public function marshalValue($value)
     {
         $type = gettype($value);
-        // Handle strings, except empty string.
+
+        // Handle string values.
         if ($type === 'string') {
             if ($value === '') {
                 return $this->handleInvalid('empty strings are invalid');
             }
-            $type = 'S';
-        // Handle numbers.
-        } elseif ($type === 'integer'
+
+            return ['S' => $value];
+        }
+
+        // Handle number values.
+        if ($type === 'integer'
             || $type === 'double'
             || $value instanceof NumberValue
         ) {
-            $type = 'N';
-            $value = (string) $value;
-        // Handle booleans.
-        } elseif ($type === 'boolean') {
-            $type = 'BOOL';
-        // Handle nulls.
-        } elseif ($type === 'NULL') {
-            $type = 'NULL';
-            $value = true;
-        // Handle sets.
-        } elseif ($value instanceof SetValue) {
+            return ['N' => (string) $value];
+        }
+
+        // Handle boolean values.
+        if ($type === 'boolean') {
+            return ['BOOL' => $value];
+        }
+
+        // Handle null values.
+        if ($type === 'NULL') {
+            return ['NULL' => true];
+        }
+
+        // Handle set values.
+        if ($value instanceof SetValue) {
             if (count($value) === 0) {
                 return $this->handleInvalid('empty sets are invalid');
             }
@@ -170,38 +178,40 @@ class Marshaler
                 }
                 $data[] = current($marshaled);
             }
-            $type = $previousType . 'S';
-            $value = array_unique($data);
-        // Handle lists and maps.
-        } elseif ($type === 'array'
-            || $value instanceof \Traversable
-            || $value instanceof \stdClass
-        ) {
-            $type = $value instanceof \stdClass ? 'M' : 'L';
+
+            return [$previousType . 'S' => array_unique($data)];
+        }
+
+        // Handle list and map values.
+        $dbType = 'L';
+        if ($value instanceof \stdClass) {
+            $type = 'array';
+            $dbType = 'M';
+        }
+        if ($type === 'array' || $value instanceof \Traversable) {
             $data = [];
             $index = 0;
             foreach ($value as $k => $v) {
                 if ($v = $this->marshalValue($v)) {
                     $data[$k] = $v;
-                    if ($type === 'L' && (!is_int($k) || $k != $index++)) {
-                        $type = 'M';
+                    if ($dbType === 'L' && (!is_int($k) || $k != $index++)) {
+                        $dbType = 'M';
                     }
                 }
             }
-            $value = $data;
-        // Handle binaries.
-        } elseif (is_resource($value) || $value instanceof StreamInterface) {
-            $type = 'B';
-            $value = (string) $this->binary($value);
-        } elseif ($value instanceof BinaryValue) {
-            $type = 'B';
-            $value = (string) $value;
-        // Handle invalid values.
-        } else {
-            return $this->handleInvalid('encountered unexpected value');
+            return [$dbType => $data];
         }
 
-        return [$type => $value];
+        // Handle binary values.
+        if (is_resource($value) || $value instanceof StreamInterface) {
+            $value = $this->binary($value);
+        }
+        if ($value instanceof BinaryValue) {
+            return ['B' => (string) $value];
+        }
+
+        // Handle invalid values.
+        return $this->handleInvalid('encountered unexpected value');
     }
 
     /**
