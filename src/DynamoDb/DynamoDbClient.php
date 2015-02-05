@@ -15,29 +15,9 @@ class DynamoDbClient extends AwsClient
     public static function getArguments()
     {
         $args = parent::getArguments();
-
         // Apply custom retry strategy for DynamoDB.
         $args['retries']['default'] = 11;
-        $args['retries']['fn'] = function ($value, array &$args) {
-            if ($value) {
-                $args['client']->getEmitter()->attach(new RetrySubscriber(
-                    ClientResolver::_wrapDebugLogger($args, [
-                        'max'    => $value,
-                        'delay'  => function ($retries) {
-                            return $retries
-                                ? (50 * (int)pow(2, $retries - 1)) / 1000
-                                : 0;
-                        },
-                        'filter' => RetrySubscriber::createChainFilter([
-                            new ThrottlingFilter($args['error_parser']),
-                            new Crc32Filter($args['error_parser']),
-                            RetrySubscriber::createStatusFilter(),
-                            RetrySubscriber::createConnectFilter()
-                        ])
-                    ])
-                ));
-            }
-        };
+        $args['retries']['fn'] = self::applyRetryConfig();
 
         return $args;
     }
@@ -63,5 +43,29 @@ class DynamoDbClient extends AwsClient
         $handler->register();
 
         return $handler;
+    }
+
+    private static function applyRetryConfig()
+    {
+        return function ($value, array &$args) {
+            if ($value) {
+                $args['client']->getEmitter()->attach(new RetrySubscriber(
+                    ClientResolver::_wrapDebugLogger($args, [
+                        'max'    => $value,
+                        'delay'  => function ($retries) {
+                            return $retries
+                                ? (50 * (int)pow(2, $retries - 1)) / 1000
+                                : 0;
+                        },
+                        'filter' => RetrySubscriber::createChainFilter([
+                            new ThrottlingFilter($args['error_parser']),
+                            new Crc32Filter($args['error_parser']),
+                            RetrySubscriber::createStatusFilter(),
+                            RetrySubscriber::createConnectFilter()
+                        ])
+                    ])
+                ));
+            }
+        };
     }
 }
