@@ -11,7 +11,7 @@ use GuzzleHttp\Command\CommandTransaction;
 use GuzzleHttp\Event\BeforeEvent;
 use GuzzleHttp\Event\RequestEvents;
 use GuzzleHttp\Exception\RequestException;
-use Aws\Signature\Provider as SignatureProvider;
+use GuzzleHttp\Command\Event\ProcessEvent;
 
 /**
  * Default AWS client implementation
@@ -49,75 +49,51 @@ class AwsClient extends AbstractClient implements AwsClientInterface
     private $defaultSignatureListener;
 
     /**
-     * The AwsClient constructor requires the following constructor options:
+     * Get an array of client constructor arguments used by the client.
      *
-     * - api: (required, Service) Object used to describe a web service.
-     * - credentials: (required, CredentialsInterface) Used when signing.
-     * - client: ({@see GuzzleHttp\Client}, required) Sends HTTP requests.
-     * - endpoint: (required, string) Endpoint for HTTP requests.
-     * - error_parser: (required, callable) Fn that parses response exceptions
-     * - serializer: (required, callable) Serializes a request for a provided
-     *   CommandTransaction argument. The fn must return a RequestInterface.
-     * - region: (string) Region used to interact with the service
-     * - exception_class: (optional) A specific exception class to throw that
-     *   extends from {@see Aws\Exception\AwsException}.
-     * - signature_provider: (callable) Function that accepts a signature name,
-     *   service name, and region name and returns a SignatureInterface object.
-     * - config: (array) Configuration array of the client, accessible via the
-     *   getConfig() method of the client.
+     * @return array
+     */
+    public static function getArguments()
+    {
+        return ClientResolver::getDefaultArguments();
+    }
+
+    /**
+     * The client constructor accepts the following options:
      *
-     *   - signature_version: (string) The default signature version to use
-     *     (e.g., v4) if you wish to use a version different than the service
-     *     default (note that per/operation overrides take precedent).
-     *
-     *
-     * @param array $config Configuration options
+     * @param array $config Client configuration options.
      *
      * @throws \InvalidArgumentException if any required options are missing
      */
     public function __construct(array $config)
     {
-        static $required = ['api', 'credentials', 'client', 'error_parser',
-                            'endpoint', 'serializer'];
-
-        foreach ($required as $r) {
-            if (!isset($config[$r])) {
-                throw new \InvalidArgumentException("$r is a required option");
-            }
+        $service = $this->parseClass();
+        $resolver = new ClientResolver(static::getArguments());
+        if (!isset($config['service'])) {
+            $config['service'] = $service;
         }
-
-        $this->serializer = $config['serializer'];
+        $config = $resolver->resolve($this, $config);
         $this->api = $config['api'];
+        $this->serializer = $config['serializer'];
+        $this->errorParser = $config['error_parser'];
+        $this->signatureProvider = $config['signature_provider'];
         $this->endpoint = $config['endpoint'];
         $this->credentials = $config['credentials'];
-        $this->errorParser = $config['error_parser'];
+        $this->defaults = $config['defaults'];
         $this->region = isset($config['region']) ? $config['region'] : null;
-        $this->defaults = isset($config['defaults']) ? $config['defaults'] : [];
-        $this->commandException = isset($config['exception_class'])
-            ? $config['exception_class']
-            : 'Aws\Exception\AwsException';
-        $this->signatureProvider = isset($config['signature_provider'])
-            ? $config['signature_provider']
-            : SignatureProvider::memoize(SignatureProvider::version());
-
-        parent::__construct($config['client'], $this->initConfig($config));
+        $this->applyParser();
+        $this->initSigners($config);
+        parent::__construct($config['client'], $config['config']);
+        $this->postConstruct($config);
     }
 
     /**
-     * Creates a new client based on the provided configuration options.
-     *
-     * @param array $config Configuration options
-     *
+     * @deprecated
      * @return static
      */
     public static function factory(array $config = [])
     {
-        // Determine the service being called
-        $class = get_called_class();
-        $service = substr($class, strrpos($class, '\\') + 1, -6);
-
-        // Create the client using the Sdk class
-        return (new Sdk)->getClient($service, $config);
+        return new static($config);
     }
 
     public function getCredentials()
@@ -326,28 +302,67 @@ class AwsClient extends AbstractClient implements AwsClientInterface
         return $this->signatureProvider;
     }
 
-    private function initConfig(array $config)
+    /**
+     * Provides a hook for clients to use after the constructor. This hook
+     * allows subclasses access to the resolved configuration array.
+     *
+     * @param array $args
+     */
+    protected function postConstruct(array $args) {}
+
+    private function initSigners(array $config)
     {
-        $conf = isset($config['config']) ? $config['config'] : [];
-
-        if (!isset($conf['signature_version'])) {
-            $conf['signature_version'] = $this->api->getSignatureVersion();
-        }
-
+        $conf = $config['config'];
         $fn = $this->signatureProvider;
         $defaultSigner = $fn(
             $conf['signature_version'],
             $this->api->getSigningName(),
             $this->region
         );
-
         $this->defaultSignatureListener = function (BeforeEvent $e) use ($defaultSigner) {
             $defaultSigner->signRequest(
                 $e->getRequest(),
                 $this->credentials
             );
         };
+    }
 
-        return $conf;
+    private function parseClass()
+    {
+        $klass = get_class($this);
+
+        if ($klass == __CLASS__) {
+            $this->commandException = 'Aws\Exception\AwsException';
+            return [__NAMESPACE__, ''];
+        }
+
+        $parts = explode('\\', $klass);
+        $service = str_replace('Client', '', array_pop($parts));
+        $ns = implode('\\', $parts);
+        $this->commandException = "{$ns}\\Exception\\{$service}Exception";
+
+        return strtolower($service);
+    }
+
+    private function applyParser()
+    {
+        $parser = Service::createParser($this->api);
+        $this->getEmitter()->on(
+            'process',
+            function (ProcessEvent $e) use ($parser) {
+                // Guard against exceptions and injected results.
+                if ($e->getException() || $e->getResult()) {
+                    return;
+                }
+
+                // Ensure a response exists in order to parse.
+                $response = $e->getResponse();
+                if (!$response) {
+                    throw new \RuntimeException('No response was received.');
+                }
+
+                $e->setResult($parser($e->getCommand(), $response));
+            }
+        );
     }
 }

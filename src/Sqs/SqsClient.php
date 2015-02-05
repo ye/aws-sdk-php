@@ -26,4 +26,11 @@ class SqsClient extends AwsClient
             '.'              => ':',
         ));
     }
+
+    protected function postConstruct(array $config)
+    {
+        $emitter = $this->getEmitter();
+        $emitter->attach(new QueueUrlSubscriber());
+        $emitter->attach(new Md5ValidatorSubscriber());
+    }
 }
