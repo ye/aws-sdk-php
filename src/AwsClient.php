@@ -397,13 +397,13 @@ class AwsClient extends AbstractClient implements AwsClientInterface
 
         if ($klass == __CLASS__) {
             $this->commandException = 'Aws\Exception\AwsException';
-            return [__NAMESPACE__, ''];
+            return '';
         }
 
         $parts = explode('\\', $klass);
-        $service = str_replace('Client', '', array_pop($parts));
-        $ns = implode('\\', $parts);
-        $this->commandException = "{$ns}\\Exception\\{$service}Exception";
+        $service = substr(array_pop($parts), 0, -6);
+        $this->commandException = implode('\\', $parts)
+            . "\\Exception\\{$service}Exception";
 
         return strtolower($service);
     }
